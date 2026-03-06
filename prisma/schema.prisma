@@ -1,0 +1,212 @@
+// ──────────────────────────────────────────────────────────────────
+// PawanPro — Database Schema (Prisma ORM)
+//
+// Supports: History, Favorites, Custom Formulas, Audit Trail,
+//           Cloud Sync, User Preferences
+//
+// Database: PostgreSQL (recommended) / SQLite (offline-first)
+// ──────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User ────────────────────────────────────────────────────────
+model User {
+  id            String   @id @default(cuid())
+  email         String?  @unique
+  name          String?
+  avatarUrl     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relationships
+  history       CalculationHistory[]
+  favorites     Favorite[]
+  customFormulas CustomFormula[]
+  auditSessions AuditSession[]
+  preferences   UserPreferences?
+  syncTokens    SyncToken[]
+
+  @@map("users")
+}
+
+// ─── Calculation History ─────────────────────────────────────────
+// Stores every calculation performed by the user across all modes.
+model CalculationHistory {
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // What was calculated
+  mode        CalculatorMode
+  expression  String          // e.g., "GST exclusive @18% on ₹50000"
+  result      String          // e.g., "₹59,000.00"
+  rawResult   String?         // Full precision: "59000.00000000"
+
+  // Optional structured input/output (JSON)
+  inputData   Json?           // Serialized input parameters
+  outputData  Json?           // Serialized full result object
+
+  // Metadata
+  isFavorite  Boolean         @default(false)
+  tags        String[]        @default([])
+  createdAt   DateTime        @default(now())
+
+  // Indexes for fast querying
+  @@index([userId, mode])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([userId, isFavorite])
+  @@map("calculation_history")
+}
+
+// ─── Favorites ───────────────────────────────────────────────────
+// Quick-access saved calculations with custom labels.
+model Favorite {
+  id          String          @id @default(cuid())
+  userId      String
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label       String          // User-defined label: "Monthly GST on Office Rent"
+  mode        CalculatorMode
+  expression  String
+  result      String
+  inputData   Json?           // Serialized inputs so user can re-run
+
+  // Organization
+  category    String?         // User-defined grouping
+  pinned      Boolean         @default(false)
+  sortOrder   Int             @default(0)
+
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([userId, mode])
+  @@index([userId, pinned])
+  @@map("favorites")
+}
+
+// ─── Custom Formulas ─────────────────────────────────────────────
+// User-saved reusable formulas with variables.
+model CustomFormula {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String          // "Profit Margin Calculator"
+  description String?
+  formula     String          // "((sellingPrice - costPrice) / sellingPrice) * 100"
+  variables   Json            // [{ name: "sellingPrice", label: "Selling Price", default: "0" }]
+
+  // Organization
+  category    String?
+  isPublic    Boolean         @default(false)   // Share with community
+  usageCount  Int             @default(0)
+
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([userId])
+  @@index([isPublic])
+  @@map("custom_formulas")
+}
+
+// ─── Audit Sessions (CA Mode) ────────────────────────────────────
+// Groups audit trail entries into sessions for paper-tape export.
+model AuditSession {
+  id          String       @id @default(cuid())
+  userId      String
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  title       String?      // "Client XYZ GST Reconciliation"
+  entries     AuditEntry[]
+  totalResult String?
+
+  // Export metadata
+  exportedAt  DateTime?
+  exportFormat String?     // "pdf" | "excel" | "whatsapp"
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("audit_sessions")
+}
+
+// ─── Audit Entry ─────────────────────────────────────────────────
+// Individual entry in an audit trail session (paper tape line).
+model AuditEntry {
+  id          String       @id @default(cuid())
+  sessionId   String
+  session     AuditSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  lineNumber  Int          // Position in the tape
+  expression  String
+  result      String
+  operation   String?      // "+", "-", "×", "÷", "GST", "TAX", etc.
+  note        String?      // User annotation: "Office rent Q3"
+  isEdited    Boolean      @default(false)
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([sessionId, lineNumber])
+  @@map("audit_entries")
+}
+
+// ─── User Preferences ────────────────────────────────────────────
+model UserPreferences {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Display
+  theme           String   @default("dark")       // "dark" | "light" | "auto"
+  numberFormat    String   @default("indian")      // "indian" | "international"
+  decimalPlaces   Int      @default(2)
+  hapticEnabled   Boolean  @default(true)
+  soundEnabled    Boolean  @default(false)
+
+  // Defaults
+  defaultMode     CalculatorMode @default(standard)
+  defaultGSTRate  Int      @default(18)
+  defaultTaxRegime String  @default("new")
+
+  // Unit converter defaults
+  lastUnitCategory String?
+  lastFromUnit     String?
+  lastToUnit       String?
+
+  updatedAt       DateTime @updatedAt
+
+  @@map("user_preferences")
+}
+
+// ─── Cloud Sync Tokens ───────────────────────────────────────────
+model SyncToken {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  deviceId    String
+  deviceName  String?
+  lastSyncAt  DateTime @default(now())
+  syncVersion Int      @default(0)
+
+  @@unique([userId, deviceId])
+  @@map("sync_tokens")
+}
+
+// ─── Enums ───────────────────────────────────────────────────────
+enum CalculatorMode {
+  standard
+  scientific
+  financial
+  programmer
+  converter
+}
